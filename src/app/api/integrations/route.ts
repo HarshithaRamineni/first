@@ -3,37 +3,47 @@ import { verifyIdToken } from "@/lib/firebase-admin";
 import { getOrCreateUser, getIntegrations, upsertIntegration } from "@/lib/db";
 
 async function getAuthUser(request: NextRequest) {
-    const token = request.cookies.get("firebase-auth-token")?.value;
-    if (!token) return null;
+    try {
+        const token = request.cookies.get("firebase-auth-token")?.value;
+        if (!token) return null;
 
-    const decoded = await verifyIdToken(token);
-    if (!decoded?.email) return null;
+        const decoded = await verifyIdToken(token);
+        if (!decoded?.email) return null;
 
-    return getOrCreateUser(decoded);
+        return await getOrCreateUser(decoded);
+    } catch (error) {
+        console.error("Error getting auth user:", error);
+        return null;
+    }
 }
 
 // GET /api/integrations - List all integrations for current user
 export async function GET(request: NextRequest) {
-    const user = await getAuthUser(request);
+    try {
+        const user = await getAuthUser(request);
 
-    if (!user) {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        if (!user) {
+            return NextResponse.json({ integrations: [] });
+        }
+
+        const integrations = await getIntegrations(user.id as string);
+
+        return NextResponse.json({ integrations });
+    } catch (error) {
+        console.error("Error fetching integrations:", error);
+        return NextResponse.json({ integrations: [], error: "Failed to fetch integrations" }, { status: 200 });
     }
-
-    const integrations = await getIntegrations(user.id as string);
-
-    return NextResponse.json({ integrations });
 }
 
 // POST /api/integrations - Enable/configure an integration
 export async function POST(request: NextRequest) {
-    const user = await getAuthUser(request);
-
-    if (!user) {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
     try {
+        const user = await getAuthUser(request);
+
+        if (!user) {
+            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        }
+
         const body = await request.json();
         const { type, enabled, config } = body;
 

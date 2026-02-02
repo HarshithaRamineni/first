@@ -5,20 +5,27 @@ import { getFirestore, Firestore } from "firebase-admin/firestore";
 let app: App | undefined;
 let auth: Auth | undefined;
 let db: Firestore | undefined;
+let initialized = false;
 
 function getFirebaseAdmin() {
-    if (!app) {
+    if (initialized && app && auth && db) {
+        return { app, auth, db };
+    }
+
+    try {
         const serviceAccountKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
 
         if (!serviceAccountKey) {
-            throw new Error("FIREBASE_SERVICE_ACCOUNT_KEY not configured");
+            console.error("FIREBASE_SERVICE_ACCOUNT_KEY not configured");
+            throw new Error("Firebase Admin not configured");
         }
 
         let serviceAccount;
         try {
             serviceAccount = JSON.parse(serviceAccountKey);
         } catch (e) {
-            throw new Error("Invalid FIREBASE_SERVICE_ACCOUNT_KEY JSON format");
+            console.error("Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY:", e);
+            throw new Error("Invalid Firebase service account key format");
         }
 
         if (getApps().length === 0) {
@@ -28,17 +35,16 @@ function getFirebaseAdmin() {
         } else {
             app = getApps()[0];
         }
-    }
 
-    if (!auth) {
         auth = getAuth(app);
-    }
-
-    if (!db) {
         db = getFirestore(app);
-    }
+        initialized = true;
 
-    return { app, auth, db };
+        return { app, auth, db };
+    } catch (error) {
+        console.error("Firebase Admin initialization error:", error);
+        throw error;
+    }
 }
 
 export async function verifyIdToken(token: string) {
@@ -64,8 +70,13 @@ export async function getUser(uid: string) {
 }
 
 export function getDb() {
-    const { db } = getFirebaseAdmin();
-    return db;
+    try {
+        const { db } = getFirebaseAdmin();
+        return db;
+    } catch (error) {
+        console.error("Error getting Firestore:", error);
+        throw error;
+    }
 }
 
 export { getFirebaseAdmin };
