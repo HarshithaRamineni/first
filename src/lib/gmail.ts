@@ -1,4 +1,5 @@
-import { db } from "@/lib/db";
+import { getDb } from "./firebase-admin";
+import { createReminder, findReminderBySourceId, updateIntegrationSync } from "./db";
 
 interface GmailMessage {
     id: string;
@@ -13,54 +14,35 @@ interface GmailThread {
     messages: GmailMessage[];
 }
 
+/**
+ * Get the stored Google OAuth access token for a user from Firestore.
+ */
 export async function getGmailAccessToken(userId: string): Promise<string | null> {
-    const account = await db.account.findFirst({
-        where: { userId, provider: "google" },
-    });
+    try {
+        const db = getDb();
+        const accountDoc = await db.collection("accounts").doc(`${userId}_google`).get();
 
-    if (!account?.access_token) {
+        if (!accountDoc.exists) {
+            console.log("[Gmail] No Google account found for user:", userId);
+            return null;
+        }
+
+        const data = accountDoc.data();
+        if (!data?.accessToken) {
+            console.log("[Gmail] No access token stored for user:", userId);
+            return null;
+        }
+
+        return data.accessToken;
+    } catch (error) {
+        console.error("[Gmail] Error getting access token:", error);
         return null;
     }
-
-    // Check if token is expired and refresh if needed
-    if (account.expires_at && account.expires_at * 1000 < Date.now()) {
-        if (!account.refresh_token) {
-            return null;
-        }
-
-        try {
-            const response = await fetch("https://oauth2.googleapis.com/token", {
-                method: "POST",
-                headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                body: new URLSearchParams({
-                    client_id: process.env.GOOGLE_CLIENT_ID!,
-                    client_secret: process.env.GOOGLE_CLIENT_SECRET!,
-                    refresh_token: account.refresh_token,
-                    grant_type: "refresh_token",
-                }),
-            });
-
-            const tokens = await response.json();
-
-            if (tokens.access_token) {
-                await db.account.update({
-                    where: { id: account.id },
-                    data: {
-                        access_token: tokens.access_token,
-                        expires_at: Math.floor(Date.now() / 1000) + tokens.expires_in,
-                    },
-                });
-                return tokens.access_token;
-            }
-        } catch (error) {
-            console.error("Failed to refresh Google token:", error);
-            return null;
-        }
-    }
-
-    return account.access_token;
 }
 
+/**
+ * Fetch recent sent Gmail threads using the Gmail API.
+ */
 export async function fetchGmailThreads(
     accessToken: string,
     maxResults = 20
@@ -74,13 +56,23 @@ export async function fetchGmailThreads(
             }
         );
 
-        const listData = await listResponse.json();
-
-        if (!listData.threads) {
+        if (!listResponse.ok) {
+            const errText = await listResponse.text();
+            console.error("[Gmail] List threads failed:", listResponse.status, errText);
+            if (listResponse.status === 401) {
+                throw new Error("TOKEN_EXPIRED");
+            }
             return [];
         }
 
-        // Fetch full thread data for each
+        const listData = await listResponse.json();
+
+        if (!listData.threads) {
+            console.log("[Gmail] No threads found");
+            return [];
+        }
+
+        // Fetch full thread data for each (limit to 10 for performance)
         const threads = await Promise.all(
             listData.threads.slice(0, 10).map(async (thread: { id: string }) => {
                 const threadResponse = await fetch(
@@ -95,11 +87,15 @@ export async function fetchGmailThreads(
 
         return threads;
     } catch (error) {
-        console.error("Error fetching Gmail threads:", error);
-        return [];
+        console.error("[Gmail] Error fetching threads:", error);
+        throw error;
     }
 }
 
+/**
+ * Analyze threads and identify ones where the user sent the last message
+ * and hasn't received a reply in 3+ days.
+ */
 export function identifyFollowUpNeeded(threads: GmailThread[]): {
     threadId: string;
     subject: string;
@@ -136,49 +132,57 @@ export function identifyFollowUpNeeded(threads: GmailThread[]): {
     return followUps;
 }
 
-export async function createEmailFollowUpReminders(userId: string): Promise<number> {
+/**
+ * Main sync function: fetches Gmail threads, identifies follow-ups,
+ * and creates reminders in Firestore.
+ */
+export async function createEmailFollowUpReminders(userId: string): Promise<{
+    created: number;
+    error?: string;
+}> {
     const accessToken = await getGmailAccessToken(userId);
     if (!accessToken) {
-        console.log("No Gmail access token for user:", userId);
-        return 0;
+        console.log("[Gmail Sync] No access token for user:", userId);
+        return { created: 0, error: "No Gmail access token. Please sign in with Google again." };
     }
 
-    const threads = await fetchGmailThreads(accessToken);
-    const followUps = identifyFollowUpNeeded(threads);
+    try {
+        const threads = await fetchGmailThreads(accessToken);
+        console.log(`[Gmail Sync] Fetched ${threads.length} threads for user ${userId}`);
 
-    let created = 0;
-    for (const followUp of followUps) {
-        // Check if reminder already exists for this thread
-        const existing = await db.reminder.findFirst({
-            where: {
-                userId,
-                sourceId: followUp.threadId,
-                status: "pending",
-            },
-        });
+        const followUps = identifyFollowUpNeeded(threads);
+        console.log(`[Gmail Sync] Found ${followUps.length} threads needing follow-up`);
 
-        if (!existing) {
-            await db.reminder.create({
-                data: {
+        let created = 0;
+        for (const followUp of followUps) {
+            // Check if reminder already exists for this thread
+            const existing = await findReminderBySourceId(userId, followUp.threadId);
+
+            if (!existing) {
+                await createReminder({
                     userId,
                     type: "email_followup",
                     title: `Follow up: ${followUp.subject}`,
                     description: followUp.snippet,
+                    dueAt: new Date().toISOString(),
+                    priority: "medium",
                     sourceId: followUp.threadId,
                     sourceUrl: `https://mail.google.com/mail/u/0/#inbox/${followUp.threadId}`,
-                    dueAt: new Date(), // Due immediately
-                    priority: "medium",
-                },
-            });
-            created++;
+                });
+                created++;
+            }
         }
+
+        // Update integration last sync time
+        await updateIntegrationSync(userId, "gmail");
+
+        console.log(`[Gmail Sync] Created ${created} new reminders for user ${userId}`);
+        return { created };
+    } catch (error: any) {
+        if (error.message === "TOKEN_EXPIRED") {
+            return { created: 0, error: "Gmail token expired. Please sign in with Google again." };
+        }
+        console.error("[Gmail Sync] Error:", error);
+        return { created: 0, error: "Failed to sync Gmail" };
     }
-
-    // Update integration last sync time
-    await db.integration.updateMany({
-        where: { userId, type: "gmail" },
-        data: { lastSyncAt: new Date() },
-    });
-
-    return created;
 }

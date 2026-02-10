@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyCronSecret } from "@/lib/utils";
-import { getEnabledIntegrations, createReminder, findReminderBySourceId, updateIntegrationSync } from "@/lib/db";
+import { getEnabledIntegrations, updateIntegrationSync } from "@/lib/db";
+import { createEmailFollowUpReminders } from "@/lib/gmail";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,10 +25,15 @@ export async function GET(request: NextRequest) {
         for (const integration of integrations) {
             try {
                 const userId = integration.userId as string;
-                // For now, create a placeholder reminder
-                // TODO: Implement Gmail API integration to fetch actual email threads
                 console.log(`[CRON] Processing user ${userId}`);
-                await updateIntegrationSync(userId, "gmail");
+
+                // Actually fetch Gmail threads and create follow-up reminders
+                const result = await createEmailFollowUpReminders(userId);
+                totalReminders += result.created;
+
+                if (result.error) {
+                    console.warn(`[CRON] Warning for user ${userId}: ${result.error}`);
+                }
             } catch (error) {
                 console.error(`[CRON] Error processing integration:`, error);
             }

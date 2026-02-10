@@ -10,6 +10,7 @@ import {
 } from "firebase/auth";
 import { auth, googleProvider, githubProvider } from "./firebase";
 import { setCookie, deleteCookie } from "cookies-next";
+import { GoogleAuthProvider as GoogleAuthProviderClass } from "firebase/auth";
 
 const AUTH_COOKIE_NAME = "firebase-auth-token";
 
@@ -51,7 +52,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const signInWithGoogle = async () => {
         try {
-            await signInWithPopup(auth, googleProvider);
+            const result = await signInWithPopup(auth, googleProvider);
+
+            // Extract Google OAuth access token for Gmail API access
+            const credential = GoogleAuthProviderClass.credentialFromResult(result);
+            if (credential?.accessToken) {
+                // Store OAuth token server-side for Gmail sync
+                try {
+                    await fetch("/api/auth/store-token", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            accessToken: credential.accessToken,
+                            provider: "google",
+                        }),
+                    });
+                } catch (err) {
+                    console.warn("Failed to store OAuth token:", err);
+                }
+            }
         } catch (error) {
             console.error("Error signing in with Google:", error);
             throw error;

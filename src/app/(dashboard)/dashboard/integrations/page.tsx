@@ -63,13 +63,28 @@ export default function IntegrationsPage() {
     const handleSync = async (type: string) => {
         setSyncing(type);
         try {
-            // Trigger sync by calling integration endpoint
-            await fetch("/api/integrations", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ type, enabled: true }),
-            });
-            // Refresh integrations
+            if (type === "gmail") {
+                // Use dedicated Gmail sync endpoint
+                const syncRes = await fetch("/api/gmail/sync", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                });
+                const syncData = await syncRes.json();
+
+                if (syncData.error) {
+                    alert(syncData.error);
+                } else if (syncData.remindersCreated > 0) {
+                    alert(`Synced! Created ${syncData.remindersCreated} new follow-up reminder(s).`);
+                }
+            } else {
+                // Generic sync for other integrations
+                await fetch("/api/integrations", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ type, enabled: true }),
+                });
+            }
+            // Refresh integrations to update lastSyncAt
             const res = await fetch("/api/integrations");
             const data = await res.json();
             setIntegrations(data.integrations || []);
