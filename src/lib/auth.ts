@@ -50,4 +50,39 @@ export async function auth() {
     return getSession();
 }
 
+/**
+ * Verify authentication from Next.js request (for API routes)
+ * Returns userId if authenticated, null otherwise
+ */
+export async function verifyAuth(request: Request): Promise<string | null> {
+    try {
+        const cookieHeader = request.headers.get("cookie");
+        if (!cookieHeader) {
+            return null;
+        }
+
+        // Parse cookie header to get auth token
+        const cookies = cookieHeader.split(";").reduce((acc, cookie) => {
+            const [key, value] = cookie.trim().split("=");
+            acc[key] = value;
+            return acc;
+        }, {} as Record<string, string>);
+
+        const token = cookies[AUTH_COOKIE_NAME];
+        if (!token) {
+            return null;
+        }
+
+        const decodedToken = await verifyIdToken(token);
+        if (!decodedToken) {
+            return null;
+        }
+
+        return decodedToken.uid;
+    } catch (error) {
+        console.error("Error verifying auth:", error);
+        return null;
+    }
+}
+
 export { AUTH_COOKIE_NAME };

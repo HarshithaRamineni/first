@@ -2,13 +2,15 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { Mail, Github, Zap, ArrowLeft, Loader2 } from "lucide-react";
 
 export default function LoginPage() {
     const { user, loading, signInWithGoogle, signInWithGithub } = useAuth();
     const router = useRouter();
+    const [signingIn, setSigningIn] = useState(false);
+    const [authError, setAuthError] = useState<string | null>(null);
 
     useEffect(() => {
         if (user && !loading) {
@@ -18,19 +20,37 @@ export default function LoginPage() {
 
     const handleGoogleSignIn = async () => {
         try {
+            setSigningIn(true);
+            setAuthError(null);
             await signInWithGoogle();
-            router.push("/dashboard");
-        } catch (error) {
+        } catch (error: any) {
             console.error("Error signing in with Google:", error);
+            if (error.code === "auth/popup-blocked") {
+                setAuthError("Popup was blocked. Please allow popups for this site and try again.");
+            } else if (error.code === "auth/cancelled-popup-request") {
+                setAuthError(null); // User cancelled, not an error
+            } else {
+                setAuthError(error.message || "Failed to sign in. Please try again.");
+            }
+        } finally {
+            setSigningIn(false);
         }
     };
 
     const handleGithubSignIn = async () => {
         try {
+            setSigningIn(true);
+            setAuthError(null);
             await signInWithGithub();
-            router.push("/dashboard");
-        } catch (error) {
+        } catch (error: any) {
             console.error("Error signing in with GitHub:", error);
+            if (error.code === "auth/popup-blocked") {
+                setAuthError("Popup was blocked. Please allow popups for this site and try again.");
+            } else {
+                setAuthError(error.message || "Failed to sign in. Please try again.");
+            }
+        } finally {
+            setSigningIn(false);
         }
     };
 
@@ -64,21 +84,37 @@ export default function LoginPage() {
                         Sign in to your account to continue automating your workflow.
                     </p>
 
+                    {authError && (
+                        <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm">
+                            {authError}
+                        </div>
+                    )}
+
                     <div className="space-y-4">
                         <button
                             onClick={handleGoogleSignIn}
-                            className="w-full btn bg-white text-black hover:bg-gray-100 py-4 text-base font-medium"
+                            disabled={signingIn}
+                            className="w-full btn bg-white text-black hover:bg-gray-100 py-4 text-base font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                            <Mail className="w-5 h-5 text-red-500" />
-                            Continue with Google
+                            {signingIn ? (
+                                <Loader2 className="w-5 h-5 animate-spin" />
+                            ) : (
+                                <Mail className="w-5 h-5 text-red-500" />
+                            )}
+                            {signingIn ? "Signing in..." : "Continue with Google"}
                         </button>
 
                         <button
                             onClick={handleGithubSignIn}
-                            className="w-full btn btn-secondary py-4 text-base font-medium"
+                            disabled={signingIn}
+                            className="w-full btn btn-secondary py-4 text-base font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                            <Github className="w-5 h-5" />
-                            Continue with GitHub
+                            {signingIn ? (
+                                <Loader2 className="w-5 h-5 animate-spin" />
+                            ) : (
+                                <Github className="w-5 h-5" />
+                            )}
+                            {signingIn ? "Signing in..." : "Continue with GitHub"}
                         </button>
                     </div>
 
@@ -132,3 +168,4 @@ export default function LoginPage() {
         </div>
     );
 }
+

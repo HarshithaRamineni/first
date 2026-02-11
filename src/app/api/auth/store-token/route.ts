@@ -16,7 +16,7 @@ export async function POST(request: NextRequest) {
         }
 
         const body = await request.json();
-        const { accessToken, provider } = body;
+        const { accessToken, refreshToken, expiresIn, provider } = body;
 
         if (!accessToken || !provider) {
             return NextResponse.json(
@@ -29,16 +29,26 @@ export async function POST(request: NextRequest) {
         const db = getDb();
         const accountRef = db.collection("accounts").doc(`${decoded.uid}_${provider}`);
 
-        await accountRef.set(
-            {
-                userId: decoded.uid,
-                provider,
-                accessToken,
-                storedAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-            },
-            { merge: true }
-        );
+        const tokenData: any = {
+            userId: decoded.uid,
+            provider,
+            accessToken,
+            storedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+        };
+
+        // Store refresh token if provided (for Google OAuth)
+        if (refreshToken) {
+            tokenData.refreshToken = refreshToken;
+        }
+
+        // Store expiry time if provided
+        if (expiresIn) {
+            const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+            tokenData.expiresAt = expiresAt;
+        }
+
+        await accountRef.set(tokenData, { merge: true });
 
         console.log(`[Auth] Stored ${provider} OAuth token for user ${decoded.uid}`);
 

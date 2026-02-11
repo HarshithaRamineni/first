@@ -22,6 +22,11 @@ const googleProvider = new GoogleAuthProvider();
 googleProvider.addScope("https://www.googleapis.com/auth/gmail.readonly");
 googleProvider.addScope("https://www.googleapis.com/auth/userinfo.email");
 googleProvider.addScope("https://www.googleapis.com/auth/userinfo.profile");
+// Request offline access to get refresh token
+googleProvider.setCustomParameters({
+    access_type: "offline",
+    prompt: "consent"  // Force consent screen to get refresh token
+});
 
 const githubProvider = new GithubAuthProvider();
 githubProvider.addScope("read:user");

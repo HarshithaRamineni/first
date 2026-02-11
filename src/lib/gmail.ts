@@ -15,7 +15,53 @@ interface GmailThread {
 }
 
 /**
+ * Refresh a Google OAuth access token using the refresh token.
+ */
+async function refreshGoogleAccessToken(refreshToken: string): Promise<{ accessToken: string; expiresIn: number } | null> {
+    try {
+        // Use GOOGLE_CLIENT_ID (server-side env var, matching .env)
+        const clientId = process.env.GOOGLE_CLIENT_ID || process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
+        const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+
+        console.log("[Gmail] Attempting token refresh. Client ID available:", !!clientId, "Client Secret available:", !!clientSecret);
+
+        if (!clientId || !clientSecret) {
+            console.error("[Gmail] Missing Google OAuth credentials. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env");
+            return null;
+        }
+
+        const response = await fetch("https://oauth2.googleapis.com/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                client_id: clientId,
+                client_secret: clientSecret,
+                refresh_token: refreshToken,
+                grant_type: "refresh_token",
+            }),
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error("[Gmail] Token refresh failed:", response.status, errorText);
+            return null;
+        }
+
+        const data = await response.json();
+        console.log("[Gmail] Token refresh successful");
+        return {
+            accessToken: data.access_token,
+            expiresIn: data.expires_in || 3600,
+        };
+    } catch (error) {
+        console.error("[Gmail] Error refreshing token:", error);
+        return null;
+    }
+}
+
+/**
  * Get the stored Google OAuth access token for a user from Firestore.
+ * Automatically refreshes the token if it has expired.
  */
 export async function getGmailAccessToken(userId: string): Promise<string | null> {
     try {
@@ -24,15 +70,57 @@ export async function getGmailAccessToken(userId: string): Promise<string | null
 
         if (!accountDoc.exists) {
             console.log("[Gmail] No Google account found for user:", userId);
+            console.log("[Gmail] Looking for document:", `${userId}_google`);
             return null;
         }
 
         const data = accountDoc.data();
+        console.log("[Gmail] Account data found. Has accessToken:", !!data?.accessToken, "Has refreshToken:", !!data?.refreshToken, "ExpiresAt:", data?.expiresAt);
+
         if (!data?.accessToken) {
             console.log("[Gmail] No access token stored for user:", userId);
             return null;
         }
 
+        // Check if token has expired
+        const now = new Date();
+        const expiresAt = data.expiresAt ? new Date(data.expiresAt) : null;
+
+        // If token is not expired, return it
+        if (expiresAt && expiresAt > now) {
+            console.log("[Gmail] Access token still valid, expires at:", expiresAt.toISOString());
+            return data.accessToken;
+        }
+
+        console.log("[Gmail] Access token expired or no expiry set. Expired at:", expiresAt?.toISOString() || "unknown");
+
+        // If token is expired and we have a refresh token, refresh it
+        if (data.refreshToken) {
+            console.log("[Gmail] Attempting refresh with refresh token...");
+            const refreshed = await refreshGoogleAccessToken(data.refreshToken);
+
+            if (refreshed) {
+                // Update the stored access token
+                const newExpiresAt = new Date(Date.now() + refreshed.expiresIn * 1000).toISOString();
+                await accountDoc.ref.update({
+                    accessToken: refreshed.accessToken,
+                    expiresAt: newExpiresAt,
+                    updatedAt: new Date().toISOString(),
+                });
+
+                console.log("[Gmail] Access token refreshed successfully, new expiry:", newExpiresAt);
+                return refreshed.accessToken;
+            } else {
+                console.log("[Gmail] Token refresh failed, trying expired token as fallback...");
+                // Fall through to return the expired token
+            }
+        } else {
+            console.log("[Gmail] No refresh token available");
+        }
+
+        // Return the (possibly expired) access token as a last resort
+        // The Gmail API call will fail with 401 if it's truly expired
+        console.log("[Gmail] Returning existing access token (may be expired)");
         return data.accessToken;
     } catch (error) {
         console.error("[Gmail] Error getting access token:", error);
@@ -89,6 +177,100 @@ export async function fetchGmailThreads(
     } catch (error) {
         console.error("[Gmail] Error fetching threads:", error);
         throw error;
+    }
+}
+
+/**
+ * Fetch recent inbox emails with full metadata (subject, from, date, snippet).
+ */
+export async function fetchRecentEmails(
+    accessToken: string,
+    maxResults = 20
+): Promise<{
+    emails: {
+        id: string;
+        threadId: string;
+        subject: string;
+        from: string;
+        to: string;
+        date: string;
+        snippet: string;
+        isRead: boolean;
+        labelIds: string[];
+    }[];
+    error?: string;
+}> {
+    try {
+        // Fetch recent messages from the inbox
+        const listResponse = await fetch(
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${maxResults}&q=-in:trash -in:spam`,
+            {
+                headers: { Authorization: `Bearer ${accessToken}` },
+            }
+        );
+
+        if (!listResponse.ok) {
+            const errText = await listResponse.text();
+            console.error("[Gmail] List messages failed:", listResponse.status, errText);
+            if (listResponse.status === 401) {
+                return { emails: [], error: "TOKEN_EXPIRED" };
+            }
+            return { emails: [], error: `Gmail API error: ${listResponse.status}` };
+        }
+
+        const listData = await listResponse.json();
+
+        if (!listData.messages || listData.messages.length === 0) {
+            console.log("[Gmail] No messages found");
+            return { emails: [] };
+        }
+
+        // Fetch metadata for each message
+        const emails = await Promise.all(
+            listData.messages.slice(0, maxResults).map(async (msg: { id: string; threadId: string }) => {
+                try {
+                    const msgResponse = await fetch(
+                        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`,
+                        {
+                            headers: { Authorization: `Bearer ${accessToken}` },
+                        }
+                    );
+
+                    if (!msgResponse.ok) return null;
+
+                    const msgData = await msgResponse.json();
+                    const headers = msgData.payload?.headers || [];
+
+                    const getHeader = (name: string) =>
+                        headers.find((h: { name: string; value: string }) =>
+                            h.name.toLowerCase() === name.toLowerCase()
+                        )?.value || "";
+
+                    return {
+                        id: msgData.id,
+                        threadId: msgData.threadId,
+                        subject: getHeader("Subject") || "(No Subject)",
+                        from: getHeader("From"),
+                        to: getHeader("To"),
+                        date: getHeader("Date") || new Date(parseInt(msgData.internalDate)).toISOString(),
+                        snippet: msgData.snippet || "",
+                        isRead: !(msgData.labelIds || []).includes("UNREAD"),
+                        labelIds: msgData.labelIds || [],
+                    };
+                } catch (err) {
+                    console.error("[Gmail] Error fetching message:", msg.id, err);
+                    return null;
+                }
+            })
+        );
+
+        const validEmails = emails.filter(Boolean);
+        console.log(`[Gmail] Fetched ${validEmails.length} recent emails`);
+
+        return { emails: validEmails as any };
+    } catch (error) {
+        console.error("[Gmail] Error fetching recent emails:", error);
+        return { emails: [], error: "Failed to fetch emails" };
     }
 }
 

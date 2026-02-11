@@ -10,7 +10,8 @@ import {
     Bell,
     Settings,
     LogOut,
-    Loader2
+    Loader2,
+    Plug
 } from "lucide-react";
 import { useEffect } from "react";
 
@@ -47,8 +48,9 @@ export default function DashboardLayout({
 
     const navigation = [
         { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+        { name: "Emails", href: "/dashboard/emails", icon: Mail },
         { name: "Reminders", href: "/dashboard/reminders", icon: Bell },
-        { name: "Integrations", href: "/dashboard/integrations", icon: Mail },
+        { name: "Integrations", href: "/dashboard/integrations", icon: Plug },
         { name: "Settings", href: "/dashboard/settings", icon: Settings },
     ];
 

@@ -102,6 +102,8 @@ export async function createReminder(data: {
     priority?: string;
     sourceId?: string;
     sourceUrl?: string;
+    followUpDays?: number;
+    autoFollowUp?: boolean;
 }) {
     try {
         const db = getDb();
@@ -117,6 +119,12 @@ export async function createReminder(data: {
             status: "pending",
             sourceId: data.sourceId || null,
             sourceUrl: data.sourceUrl || null,
+            followUpDays: data.followUpDays || null,
+            autoFollowUp: data.autoFollowUp || false,
+            nextFollowUpAt: data.followUpDays
+                ? new Date(Date.now() + data.followUpDays * 24 * 60 * 60 * 1000).toISOString()
+                : null,
+            followUpAttempts: 0,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
         };
@@ -297,5 +305,57 @@ export async function getEnabledIntegrations(type: string) {
     } catch (error) {
         console.error("Error getting enabled integrations:", error);
         return [];
+    }
+}
+
+// Follow-up operations
+export async function getRemindersDueForFollowUp() {
+    try {
+        const db = getDb();
+        const now = new Date().toISOString();
+
+        const snapshot = await db.collection("reminders")
+            .where("autoFollowUp", "==", true)
+            .where("status", "==", "pending")
+            .get();
+
+        // Filter in memory for nextFollowUpAt check
+        const dueReminders = snapshot.docs
+            .map(doc => ({ id: doc.id, ...doc.data() }))
+            .filter((r: any) => r.nextFollowUpAt && r.nextFollowUpAt <= now);
+
+        return dueReminders;
+    } catch (error) {
+        console.error("Error getting reminders due for follow-up:", error);
+        return [];
+    }
+}
+
+export async function updateFollowUpAttempt(reminderId: string) {
+    try {
+        const db = getDb();
+        const docRef = db.collection("reminders").doc(reminderId);
+        const doc = await docRef.get();
+
+        if (!doc.exists) return null;
+
+        const data = doc.data();
+        const followUpAttempts = (data?.followUpAttempts || 0) + 1;
+        const followUpDays = data?.followUpDays || 3;
+
+        // Calculate next follow-up date (double the interval each time, max 14 days)
+        const nextInterval = Math.min(followUpDays * Math.pow(2, followUpAttempts - 1), 14);
+        const nextFollowUpAt = new Date(Date.now() + nextInterval * 24 * 60 * 60 * 1000).toISOString();
+
+        await docRef.update({
+            followUpAttempts,
+            nextFollowUpAt,
+            updatedAt: new Date().toISOString(),
+        });
+
+        return { id: reminderId, followUpAttempts, nextFollowUpAt };
+    } catch (error) {
+        console.error("Error updating follow-up attempt:", error);
+        return null;
     }
 }
